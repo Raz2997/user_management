@@ -1,3 +1,44 @@
+# User Management System Documentation
+
+## Overview
+The User Management System is a FastAPI-based application for managing user accounts, authentication, and role-based access control.
+
+## API Endpoints
+
+### User Management
+
+#### PUT /users/{user_id}/profile
+**Description:** Updates the authenticated user's profile information.  
+**Authorization:** Requires the user to be authenticated and updating their own profile.  
+**Request Body:** UserUpdate schema (e.g., first_name, last_name, bio, linkedin_profile_url).  
+**Response:** UserResponse with updated user data and HATEOAS links.  
+
+**Example:**
+```bash
+curl -X PUT "http://localhost/users/123e4567-e89b-12d3-a456-426614174000/profile" \
+     -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     -d '{"first_name": "John", "last_name": "Doe", "bio": "Software developer"}'
+```
+
+#### POST /users/{user_id}/professional-status
+**Description:** Upgrades a user to professional status, sending an email notification.  
+**Authorization:** Requires ADMIN or MANAGER role.  
+**Response:** UserResponse with updated user data and HATEOAS links.  
+
+**Example:**
+```bash
+curl -X POST "http://localhost/users/123e4567-e89b-12d3-a456-426614174000/professional-status" \
+     -H "Authorization: Bearer <admin_token>"
+```
+
+## Database Schema
+- **users:** Stores user data, including `is_professional` for professional status.  
+- **audit_logs:** (Added in RBAC Enhancements) Stores audit logs for role changes.  
+
+## Email Templates
+- **professional_status_upgrade.md:** Notification for professional status upgrades.  
+
 # 🚀 User Management System - Technical Overview
 
 Welcome to the User Management System, a powerful and scalable solution built using the FastAPI web framework! 🌟 This document provides a comprehensive overview of the system's architecture, key features, and implementation details. Let's dive in and explore the awesomeness! 😎
@@ -108,3 +149,4 @@ The User Management System is open-sourced under the MIT License, allowing for f
 We hope this technical overview has given you a comprehensive understanding of the User Management System. With its robust architecture, best practices, and exciting features, it provides a solid foundation for building scalable and secure user management solutions.
 
 Feel free to explore the codebase, contribute to the project, and unleash your creativity! If you have any questions or suggestions, don't hesitate to reach out. Happy coding! 💻✨
+
