@@ -1,97 +1,64 @@
-from builtins import bool, int, str
-from datetime import datetime
-from enum import Enum
-import uuid
-from sqlalchemy import (
-    Column, String, Integer, DateTime, Boolean, func, Enum as SQLAlchemyEnum
-)
-from sqlalchemy.dialects.postgresql import UUID, ENUM
+from sqlalchemy import Column, String, DateTime, Boolean, Enum, Integer
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
-
-class UserRole(Enum):
-    """Enumeration of user roles within the application, stored as ENUM in the database."""
-    ANONYMOUS = "ANONYMOUS"
-    AUTHENTICATED = "AUTHENTICATED"
-    MANAGER = "MANAGER"
-    ADMIN = "ADMIN"
+from datetime import datetime
+from uuid import uuid4, UUID as UUIDType
+from app.models.user_role import UserRole
+from app.core.security import hash_password
+import pytz
 
 class User(Base):
-    """
-    Represents a user within the application, corresponding to the 'users' table in the database.
-    This class uses SQLAlchemy ORM for mapping attributes to database columns efficiently.
-    
-    Attributes:
-        id (UUID): Unique identifier for the user.
-        nickname (str): Unique nickname for privacy, required.
-        email (str): Unique email address, required.
-        email_verified (bool): Flag indicating if the email has been verified.
-        hashed_password (str): Hashed password for security, required.
-        first_name (str): Optional first name of the user.
-        last_name (str): Optional first name of the user.
-
-        bio (str): Optional biographical information.
-        profile_picture_url (str): Optional URL to a profile picture.
-        linkedin_profile_url (str): Optional LinkedIn profile URL.
-        github_profile_url (str): Optional GitHub profile URL.
-        role (UserRole): Role of the user within the application.
-        is_professional (bool): Flag indicating professional status.
-        professional_status_updated_at (datetime): Timestamp of last professional status update.
-        last_login_at (datetime): Timestamp of the last login.
-        failed_login_attempts (int): Count of failed login attempts.
-        is_locked (bool): Flag indicating if the account is locked.
-        created_at (datetime): Timestamp when the user was created, set by the server.
-        updated_at (datetime): Timestamp of the last update, set by the server.
-
-    Methods:
-        lock_account(): Locks the user account.
-        unlock_account(): Unlocks the user account.
-        verify_email(): Marks the user's email as verified.
-        has_role(role_name): Checks if the user has a specified role.
-        update_professional_status(status): Updates the professional status and logs the update time.
-    """
     __tablename__ = "users"
-    __mapper_args__ = {"eager_defaults": True}
+    
+    id: Mapped[UUIDType] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    nickname: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    first_name: Mapped[str] = mapped_column(String(50), nullable=True)
+    last_name: Mapped[str] = mapped_column(String(50), nullable=True)
+    bio: Mapped[str] = mapped_column(String(255), nullable=True)
+    profile_picture_url: Mapped[str] = mapped_column(String(255), nullable=True)
+    github_profile_url: Mapped[str] = mapped_column(String(255), nullable=True)
+    linkedin_profile_url: Mapped[str] = mapped_column(String(255), nullable=True)
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.PENDING, nullable=False)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_professional: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_login_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_token: Mapped[str] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(pytz.UTC))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(pytz.UTC), onupdate=lambda: datetime.now(pytz.UTC))
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    nickname: Mapped[str] = Column(String(50), unique=True, nullable=False, index=True)
-    email: Mapped[str] = Column(String(255), unique=True, nullable=False, index=True)
-    first_name: Mapped[str] = Column(String(100), nullable=True)
-    last_name: Mapped[str] = Column(String(100), nullable=True)
-    bio: Mapped[str] = Column(String(500), nullable=True)
-    profile_picture_url: Mapped[str] = Column(String(255), nullable=True)
-    linkedin_profile_url: Mapped[str] = Column(String(255), nullable=True)
-    github_profile_url: Mapped[str] = Column(String(255), nullable=True)
-    role: Mapped[UserRole] = Column(SQLAlchemyEnum(UserRole, name='UserRole', create_constraint=True), nullable=False)
-    is_professional: Mapped[bool] = Column(Boolean, default=False)
-    professional_status_updated_at: Mapped[datetime] = Column(DateTime(timezone=True), nullable=True)
-    last_login_at: Mapped[datetime] = Column(DateTime(timezone=True), nullable=True)
-    failed_login_attempts: Mapped[int] = Column(Integer, default=0)
-    is_locked: Mapped[bool] = Column(Boolean, default=False)
-    created_at: Mapped[datetime] = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    verification_token = Column(String, nullable=True)
-    email_verified: Mapped[bool] = Column(Boolean, default=False, nullable=False)
-    hashed_password: Mapped[str] = Column(String(255), nullable=False)
-
-
-    def __repr__(self) -> str:
-        """Provides a readable representation of a user object."""
-        return f"<User {self.nickname}, Role: {self.role.name}>"
-
-    def lock_account(self):
+    def update_professional_status(self, is_professional: bool) -> None:
+        """Update the user's professional status."""
+        self.is_professional = is_professional
+        self.updated_at = datetime.now(pytz.UTC)
+    
+    def lock_account(self) -> None:
+        """Lock the user account due to too many failed login attempts."""
         self.is_locked = True
-
-    def unlock_account(self):
-        self.is_locked = False
-
-    def verify_email(self):
+        self.updated_at = datetime.now(pytz.UTC)
+    
+    def increment_failed_login_attempts(self) -> None:
+        """Increment the failed login attempts counter."""
+        self.failed_login_attempts += 1
+        self.updated_at = datetime.now(pytz.UTC)
+    
+    def reset_failed_login_attempts(self) -> None:
+        """Reset the failed login attempts counter."""
+        self.failed_login_attempts = 0
+        self.updated_at = datetime.now(pytz.UTC)
+    
+    def update_last_login(self) -> None:
+        """Update the last login timestamp."""
+        self.last_login_at = datetime.now(pytz.UTC)
+        self.updated_at = datetime.now(pytz.UTC)
+    
+    def verify_email(self) -> None:
+        """Mark the user's email as verified."""
         self.email_verified = True
-
-    def has_role(self, role_name: UserRole) -> bool:
-        return self.role == role_name
-
-    def update_professional_status(self, status: bool):
-        """Updates the professional status and logs the update time."""
-        self.is_professional = status
-        self.professional_status_updated_at = func.now()
+        self.role = UserRole.AUTHENTICATED
+        self.verification_token = None
+        self.updated_at = datetime.now(pytz.UTC)
