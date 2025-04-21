@@ -13,6 +13,55 @@ from app.schemas.user_schemas import UserUpdate
 
 # Example of a test function using the async_client fixture
 @pytest.mark.asyncio
+async def test_change_user_role(client: TestClient, async_session: AsyncSession, admin_token):
+    user_id = uuid4()
+    user = User(
+        id=user_id,
+        email="test@example.com",
+        nickname="testuser",
+        hashed_password=hash_password("Secure*1234"),
+        email_verified=True,
+        role=UserRole.AUTHENTICATED
+    )
+    async_session.add(user)
+    await async_session.commit()
+    
+    response = client.put(
+        f"/users/{user_id}/role",
+        json="MANAGER",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["role"] == "MANAGER"
+    assert "links" in response.json()
+    
+    audit_log = (await async_session.execute(select(AuditLog).filter_by(user_id=user_id))).scalars().first()
+    assert audit_log is not None
+    assert audit_log.action == "Changed role to MANAGER"
+
+@pytest.mark.asyncio
+async def test_change_user_role_invalid_role(client: TestClient, async_session: AsyncSession, admin_token):
+    user_id = uuid4()
+    response = client.put(
+        f"/users/{user_id}/role",
+        json="INVALID_ROLE",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid role"
+
+@pytest.mark.asyncio
+async def test_change_user_role_unauthorized(client: TestClient, async_session: AsyncSession, user_token):
+    user_id = uuid4()
+    response = client.put(
+        f"/users/{user_id}/role",
+        json="MANAGER",
+        headers={"Authorization": f"Bearer {user_token}"}
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
+
+@pytest.mark.asyncio
 async def test_update_user_profile(client: TestClient, async_session: AsyncSession, user_token):
     user_id = uuid4()
     user = User(
