@@ -18,160 +18,128 @@ Key Highlights:
 - Utilizes OAuth2PasswordBearer for securing API endpoints, requiring valid access tokens for operations.
 """
 
-from datetime import timedelta
-from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Response, status, Request
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import UUID
+from datetime import timedelta
+import logging
 
-from app.dependencies import get_current_user, get_db, get_email_service, require_role, get_settings
-from app.schemas.pagination_schema import EnhancedPagination
-from app.schemas.token_schema import TokenResponse
-from app.schemas.user_schemas import LoginRequest, UserBase, UserCreate, UserListResponse, UserResponse, UserUpdate
+from app.database import get_db
+from app.schemas.user_schemas import UserCreate, UserResponse, UserUpdate, TokenResponse
 from app.services.user_service import UserService
-from app.services.jwt_service import create_access_token
-from app.utils.link_generation import create_user_links, generate_pagination_links
 from app.services.email_service import EmailService
+from app.dependencies import get_current_user, require_role, get_email_service
+from app.core.security import create_access_token
+from app.core.config import settings
+from app.utils.links import create_user_links
+from app.models.user_model import UserRole
+from app.models.audit_log_model import AuditLog
 
 router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
-settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
-@router.get("/users/{user_id}", response_model=UserResponse, name="get_user", tags=["User Management Requires (Admin or Manager Roles)"])
-async def get_user(user_id: UUID, request: Request, db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))):
+@router.post("/signup", response_model=UserResponse, tags=["Authentication"])
+async def signup_user(
+    user_data: UserCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    email_service: EmailService = Depends(get_email_service)
+):
+    user = await UserService.create_user(db, user_data)
+    await email_service.send_registration_email(user.email, user.first_name)
+    return UserResponse.model_construct(
+        **user.dict(),
+        links=create_user_links(user.id, request)
+    )
+
+
+@router.post("/login", response_model=TokenResponse, tags=["Authentication"])
+async def login_user(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db)
+):
+    user = await UserService.authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(data={"sub": str(user.id)}, expires_delta=access_token_expires)
+
+    return TokenResponse(access_token=access_token, token_type="bearer")
+
+
+@router.get("/me", response_model=UserResponse, tags=["User Profile"])
+async def get_profile(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    return UserResponse.model_construct(
+        **current_user,
+        links=create_user_links(UUID(current_user["id"]), request)
+    )
+
+
+@router.put("/me", response_model=UserResponse, tags=["User Profile"])
+async def update_profile(
+    updated_data: UserUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    updated_user = await UserService.update_user(db, UUID(current_user["id"]), updated_data)
+    return UserResponse.model_construct(
+        **updated_user.dict(),
+        links=create_user_links(updated_user.id, request)
+    )
+
+
+@router.put("/users/{user_id}/role", response_model=UserResponse, tags=["User Management Requires (Admin Role)"])
+async def change_user_role(
+    user_id: UUID,
+    new_role: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role(["ADMIN"]))
+):
+    """
+    Change a user's role.
+    Only admins can perform this action.
+    Logs the action in the audit_logs table.
+    """
+    if new_role not in [role.value for role in UserRole]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
     user = await UserService.get_by_id(db, user_id)
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.role = UserRole[new_role]
+
+    audit_log = AuditLog(
+        action=f"Changed role to {new_role}",
+        user_id=user_id,
+        performed_by=UUID(current_user["id"])
+    )
+    db.add(user)
+    db.add(audit_log)
+    await db.commit()
 
     return UserResponse.model_construct(
         id=user.id,
         nickname=user.nickname,
+        email=user.email,
         first_name=user.first_name,
         last_name=user.last_name,
         bio=user.bio,
         profile_picture_url=user.profile_picture_url,
-        github_profile_url=user.github_profile_url,
         linkedin_profile_url=user.linkedin_profile_url,
+        github_profile_url=user.github_profile_url,
         role=user.role,
-        email=user.email,
+        is_professional=user.is_professional,
         last_login_at=user.last_login_at,
         created_at=user.created_at,
         updated_at=user.updated_at,
         links=create_user_links(user.id, request)
     )
-
-
-@router.put("/users/{user_id}", response_model=UserResponse, name="update_user", tags=["User Management Requires (Admin or Manager Roles)"])
-async def update_user(user_id: UUID, user_update: UserUpdate, request: Request, db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))):
-    user_data = user_update.model_dump(exclude_unset=True)
-    updated_user = await UserService.update(db, user_id, user_data)
-    if not updated_user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-    return UserResponse.model_construct(
-        id=updated_user.id,
-        bio=updated_user.bio,
-        first_name=updated_user.first_name,
-        last_name=updated_user.last_name,
-        nickname=updated_user.nickname,
-        email=updated_user.email,
-        role=updated_user.role,
-        last_login_at=updated_user.last_login_at,
-        profile_picture_url=updated_user.profile_picture_url,
-        github_profile_url=updated_user.github_profile_url,
-        linkedin_profile_url=updated_user.linkedin_profile_url,
-        created_at=updated_user.created_at,
-        updated_at=updated_user.updated_at,
-        links=create_user_links(updated_user.id, request)
-    )
-
-
-@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, name="delete_user", tags=["User Management Requires (Admin or Manager Roles)"])
-async def delete_user(user_id: UUID, db: AsyncSession = Depends(get_db), current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))):
-    success = await UserService.delete(db, user_id)
-    if not success:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.post("/users/", response_model=UserResponse, status_code=status.HTTP_201_CREATED, tags=["User Management Requires (Admin or Manager Roles)"], name="create_user")
-async def create_user(user: UserCreate, request: Request, db: AsyncSession = Depends(get_db), email_service: EmailService = Depends(get_email_service), current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))):
-    existing_user = await UserService.get_by_email(db, user.email)
-    if existing_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already exists")
-    
-    created_user = await UserService.create(db, user.model_dump(), email_service)
-    if not created_user:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create user")
-
-    return UserResponse.model_construct(
-        id=created_user.id,
-        bio=created_user.bio,
-        first_name=created_user.first_name,
-        last_name=created_user.last_name,
-        profile_picture_url=created_user.profile_picture_url,
-        nickname=created_user.nickname,
-        email=created_user.email,
-        role=created_user.role,
-        last_login_at=created_user.last_login_at,
-        created_at=created_user.created_at,
-        updated_at=created_user.updated_at,
-        links=create_user_links(created_user.id, request)
-    )
-
-
-@router.get("/users/", response_model=UserListResponse, tags=["User Management Requires (Admin or Manager Roles)"])
-async def list_users(
-    request: Request,
-    skip: int = 0,
-    limit: int = 10,
-    db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))
-):
-    total_users = await UserService.count(db)
-    users = await UserService.list_users(db, skip, limit)
-
-    user_responses = [UserResponse.model_validate(user) for user in users]
-    pagination_links = generate_pagination_links(request, skip, limit, total_users)
-
-    return UserListResponse(
-        items=user_responses,
-        total=total_users,
-        page=skip // limit + 1,
-        size=len(user_responses),
-        links=pagination_links
-    )
-
-
-@router.post("/register/", response_model=UserResponse, tags=["Login and Registration"])
-async def register(user_data: UserCreate, session: AsyncSession = Depends(get_db), email_service: EmailService = Depends(get_email_service)):
-    user = await UserService.register_user(session, user_data.model_dump(), email_service)
-    if user:
-        return user
-    raise HTTPException(status_code=400, detail="Email already exists")
-
-
-@router.post("/login/", response_model=TokenResponse, tags=["Login and Registration"])
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), session: AsyncSession = Depends(get_db)):
-    if await UserService.is_account_locked(session, form_data.username):
-        raise HTTPException(status_code=400, detail="Account locked due to too many failed login attempts.")
-
-    user = await UserService.login_user(session, form_data.username, form_data.password)
-    if user:
-        access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
-        access_token = create_access_token(
-            data={"sub": user.email, "role": str(user.role.name)},
-            expires_delta=access_token_expires
-        )
-        return {"access_token": access_token, "token_type": "bearer"}
-
-    raise HTTPException(status_code=401, detail="Incorrect email or password.")
-
-
-@router.get("/verify-email/{user_id}/{token}", status_code=status.HTTP_200_OK, name="verify_email", tags=["Login and Registration"])
-async def verify_email(user_id: UUID, token: str, db: AsyncSession = Depends(get_db), email_service: EmailService = Depends(get_email_service)):
-    success = await UserService.verify_email(db, user_id, token, email_service)
-    if not success:
-        raise HTTPException(status_code=400, detail="Invalid or expired token.")
-    return {"message": "Email verified successfully."}
