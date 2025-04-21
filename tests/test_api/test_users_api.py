@@ -6,8 +6,87 @@ from app.models.user_model import User, UserRole
 from app.utils.nickname_gen import generate_nickname
 from app.utils.security import hash_password
 from app.services.jwt_service import decode_token  # Import your FastAPI app
+from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import uuid4
+from app.schemas.user_schemas import UserUpdate
 
 # Example of a test function using the async_client fixture
+@pytest.mark.asyncio
+async def test_update_user_profile(client: TestClient, async_session: AsyncSession, user_token):
+    user_id = uuid4()
+    user = User(
+        id=user_id,
+        email="test@example.com",
+        nickname="testuser",
+        hashed_password=hash_password("Secure*1234"),
+        email_verified=True,
+        role=UserRole.AUTHENTICATED
+    )
+    async_session.add(user)
+    await async_session.commit()
+    
+    update_data = {
+        "first_name": "John",
+        "last_name": "Doe",
+        "bio": "Software developer",
+        "linkedin_profile_url": "https://linkedin.com/in/johndoe"
+    }
+    response = client.put(
+        f"/users/{user_id}/profile",
+        json=update_data,
+        headers={"Authorization": f"Bearer {user_token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["first_name"] == "John"
+    assert response.json()["last_name"] == "Doe"
+    assert response.json()["bio"] == "Software developer"
+    assert response.json()["linkedin_profile_url"] == "https://linkedin.com/in/johndoe"
+    assert "links" in response.json()
+
+@pytest.mark.asyncio
+async def test_update_user_profile_unauthorized(client: TestClient, async_session: AsyncSession, user_token):
+    user_id = uuid4()
+    response = client.put(
+        f"/users/{user_id}/profile",
+        json={"first_name": "John"},
+        headers={"Authorization": f"Bearer {user_token}"}
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "You can only update your own profile"
+
+@pytest.mark.asyncio
+async def test_upgrade_professional_status(client: TestClient, async_session: AsyncSession, admin_token):
+    user_id = uuid4()
+    user = User(
+        id=user_id,
+        email="test@example.com",
+        nickname="testuser",
+        hashed_password=hash_password("Secure*1234"),
+        email_verified=True,
+        role=UserRole.AUTHENTICATED
+    )
+    async_session.add(user)
+    await async_session.commit()
+    
+    response = client.post(
+        f"/users/{user_id}/professional-status",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["is_professional"] is True
+    assert "links" in response.json()
+
+@pytest.mark.asyncio
+async def test_upgrade_professional_status_unauthorized(client: TestClient, async_session: AsyncSession, user_token):
+    user_id = uuid4()
+    response = client.post(
+        f"/users/{user_id}/professional-status",
+        headers={"Authorization": f"Bearer {user_token}"}
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Insufficient permissions"
+
 @pytest.mark.asyncio
 async def test_create_user_access_denied(async_client, user_token, email_service):
     headers = {"Authorization": f"Bearer {user_token}"}
